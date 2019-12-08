@@ -1,0 +1,68 @@
+SELECT 
+  d.id as deal_id, 
+   m.name as merchant_name, 
+   dl.name as deal_name, 
+   
+## This next column filters out anything before the first bracket (A common necessity to make deal names shorter)
+   IF(dl.name LIKE '%(%',LEFT(dl.name, LOCATE('(', dl.name) -1), dl.name) as 'Deal_Name_v2', 
+   
+   CONCAT(ROUND(MAX((absolute_price_retail-absolute_price_deal)/absolute_price_retail)*100), "%") as '%_Discount',
+   CONCAT("https://images.wagjag.com/images/deals/", dt.filename) as 'Image Link',
+   CONCAT("https://www.wagjag.com/deal/", dl.readable_name) as 'Deal Link', 
+   
+## Note that the database uses UNIXTIME which defaults into the UTC timezone, which we must convert to EST:
+   CONVERT_TZ(FROM_UNIXTIME(d.expiry_date), 'UTC', 'EST') as 'Deal End Date', 
+   
+   SUM(pi.amount) as 'total_sales', 
+   SUM(pi.quantity) as 'total_quantity', 
+   COUNT(pi.quantity) as 'total_orders'
+   
+FROM deal_options do 
+# The deal options table is able to differentiate different prices for variations of a deal
+
+LEFT OUTER JOIN purchase_items pi on do.id = pi.deal_option_id 
+# purchase_items includes relevant purchase data for each item
+
+LEFT OUTER JOIN deals d on d.id = do.deal_id
+# deals contains information such as start and end dates of certain deals, along with other information
+
+LEFT OUTER JOIN deals_lang as dl on dl.deal_id = d.id
+# deals_lang contains verbose deal names
+
+LEFT OUTER JOIN deal_thumbnails as dt on dt.deal_id = d.id
+# deal_thumbnails contains data regarding URL's of images for each deal
+
+LEFT OUTER JOIN (select dt.deal_id, min(dt.image_order) as min_image_order from deal_thumbnails as dt where dt.deleted_at is null group by deal_id) AS temp_min_image on temp_min_image.deal_id = dt.deal_id and temp_min_image.min_image_order = dt.image_order
+# This was done as the minimum image order indicates the first image that shows up when opening a deal page
+
+LEFT OUTER JOIN (select do.deal_id, max(do.last_updated) as max_last_updated from deal_options as do group by deal_id)
+as temp_max_update on temp_max_update.deal_id = do.deal_id and temp_max_update.max_last_updated = do.last_updated
+# This was done to have the most up to date information for the deal option
+
+LEFT OUTER JOIN merchants as m on m.id = d.merchant_id
+# merchants contains information relevant to each merchant or vendor
+
+WHERE
+# Deal is a product
+  d.product = 1
+  
+# Deal is Live on the website (alternatively could use BETWEEN function)
+    AND d.active_date <= UNIX_TIMESTAMP(CONVERT_TZ(CURRENT_TIMESTAMP(), 'EST', 'UTC'))
+    AND d.expiry_date >= UNIX_TIMESTAMP(CONVERT_TZ(CURRENT_TIMESTAMP(), 'EST', 'UTC'))
+   
+# Want to only see the URL for the first image
+    AND dt.image_order = temp_min_image.min_image_order
+    
+# The image is still live on the website
+    AND dt.deleted_at is null
+
+# Deal is available publicly
+    AND d.deal_status_id = 1
+
+GROUP BY d.id
+
+# Only reflect deals that have sold any quantity over 0
+HAVING sum(pi.quantity) > 0
+
+ORDER BY sum(pi.quantity) desc
+;
